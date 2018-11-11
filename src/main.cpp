@@ -133,15 +133,19 @@ int main(int argc, char *argv[])
     }
     LOG(true, function + " create UDPSOCKFun thread success");
     pthread_t thread_jrtp;
-    ret = pthread_create(&thread_sock, NULL, JrtpFun, NULL);
+    ret = pthread_create(&thread_jrtp, NULL, JrtpFun, NULL);
     if(ret){
         printf("----(%s)--(%s)----(%d)--phtread_create JrtpFun failed!--\n",__FILE__,__FUNCTION__,__LINE__);
         LOG(false, function + " create JrtpFun failed");
         return ret;
     }
     LOG(true, function + " create JrtpFun thread success");
-     
+    
+    while(push_flag == false){
+	usleep(1000);
+    }
     int num = atoi(argv[1]);
+    
     NvApplicationProfiler &profiler = NvApplicationProfiler::getProfilerInstance();
     pthread_t fps_thread;
     pthread_create(&fps_thread, NULL, fps_function, NULL);

@@ -1,7 +1,7 @@
 
 include ../Rules.mk
 
-APP := ./bin/camera_push
+APP := ./bin/camera_rtp
 
 ARGUS_UTILS_DIR := $(TOP_DIR)/argus/samples/utils
 

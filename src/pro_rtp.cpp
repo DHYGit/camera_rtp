@@ -4,6 +4,8 @@
 #include "jrtplib3/rtpsessionparams.h"
 #include "jrtplib3/rtpudpv4transmitter.h"
 #include "jrtplib3/rtpipv4address.h"
+#include "jrtplib3/rtptimeutilities.h"
+#include "jrtplib3/rtppacket.h"
 #include "jrtplib3/rtperrors.h"
 #include <iostream>
 #include <string.h>
@@ -67,7 +69,7 @@ void *UDPSOCKFun(void *ptr){
     socklen_t peerlen;
     memset(&servaddr, 0, sizeof(servaddr));
     servaddr.sin_family = AF_INET;
-    servaddr.sin_port = htons(7088);
+    servaddr.sin_port = htons(SRC_PORT);
     servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
     char recvbuf[1024] = {0};
     peerlen = sizeof(peeraddr);
@@ -76,7 +78,7 @@ void *UDPSOCKFun(void *ptr){
         printf("socket error \n");
         return NULL;
     }
-    printf("UDP:lesten port 7088\n");
+    printf("UDP:lesten port %d\n", SRC_PORT);
     if (bind(sock, (struct sockaddr *)&servaddr, sizeof(servaddr)) < 0)
     {
         printf("bind error \n");
@@ -90,10 +92,9 @@ void *UDPSOCKFun(void *ptr){
             usleep(1000);
             continue;
         }
-        printf("recvbuf:\n");
         if(recvbuf[0] == 0x01){
-            ret = InitJrtp(peeraddr, 7078);
-            LOG(ret == 0, function + " Init UDP");
+            ret = InitJrtp(peeraddr, DST_PORT);
+            LOG(ret == 0, function + " Init Jrtp");
             push_flag = true;
         }else if(recvbuf[0] == 0x02){
             push_flag = false;
@@ -110,6 +111,14 @@ void *JrtpFun(void *ptr){
     int wait_num = 0;
     int ret = -1;
     char sendbuf[MAX_RTP_PKT_LENGTH];
+    char* nalu_payload;
+    unsigned int timestamp_increse=0,ts_current=0;
+    RTPTime starttime = RTPTime::CurrentTime();
+    NALU_HEADER *nalu_hdr;
+    FU_INDICATOR *fu_ind;
+    FU_HEADER *fu_hdr; 
+    
+    NALU_t *nalu = AllocNALU(8000000);
     LOG(true, "In " + function);
     while(1){
        if(!push_flag){
@@ -142,53 +151,151 @@ void *JrtpFun(void *ptr){
         MediaDataStruct media_data = video_buf_queue->front();
         video_buf_queue->pop();
         pthread_mutex_unlock(&video_buf_queue_lock);
-	if(media_data.len < MAX_RTP_PKT_LENGTH){
-		memset(sendbuf, 0, MAX_RTP_PKT_LENGTH);
-		memcpy(sendbuf, media_data.buff, media_data.len);
-		ret = session.SendPacket((void*)sendbuf, media_data.len);
-		if(ret < 0) {
-			string msg = RTPGetErrorString(ret);
-			printf("Error string:%s \n", msg.c_str());
-			LOG(false, function + " jrtp send packet failed " + msg);
-		}	
-	}else if(media_data.len > SOCKLENGTH){
-		session.SetDefaultMark(false);
-		int k = 0, l = 0;
-		k = media_data.len / MAX_RTP_PKT_LENGTH;
-		l = media_data.len % MAX_RTP_PKT_LENGTH;
-		int t = 0;
-		char nalHeader = media_data.buff[0];
-		while(t < k || (t == k && l > 0)){
-			if((0 == t) || (t < k && 0 != t)){
-				memset(sendbuf, 0, MAX_RTP_PKT_LENGTH);
-				memcpy(sendbuf, media_data.buff+ t * MAX_RTP_PKT_LENGTH, MAX_RTP_PKT_LENGTH);
-				ret = session.SendPacket((void*)sendbuf, MAX_RTP_PKT_LENGTH);
-				if(ret < 0) {
-					string msg = RTPGetErrorString(ret);
-					printf("Error string:%s \n", msg.c_str());
-					LOG(false, function + " jrtp send packet failed " + msg);
-				}
-				t++;
-
-			}else if((k == t && l > 0) || (t == (k - 1) && l == 0)){
-				session.SetDefaultMark(true);
-				int iSendLen;
-				if(l > 0){
-					iSendLen = media_data.len - t * MAX_RTP_PKT_LENGTH;
-				}else{
-					iSendLen = MAX_RTP_PKT_LENGTH;
-				}
-				memset(sendbuf, 0, MAX_RTP_PKT_LENGTH);
-				memcpy(sendbuf, media_data.buff + t * MAX_RTP_PKT_LENGTH, iSendLen);
-				ret = session.SendPacket((void*)sendbuf, iSendLen);
-				if(ret < 0) {
-                                        string msg = RTPGetErrorString(ret);
-                                        printf("Error string:%s \n", msg.c_str());
-                                        LOG(false, function + " jrtp send packet failed " + msg);
-                                }
-                                t++;
-			}
+	
+        int index = 0;
+	int nalustart;
+	while(index < media_data.len){
+	    if(media_data.buff[index++] == 0x00 && media_data.buff[index++] == 0x00){
+		if(media_data.buff[index++] == 0x01){
+		    nalu->startcodeprefix_len = 3;
+		    goto gotnal;
+		}else{
+		    index--;
+		    if(media_data.buff[index++] == 0x00 && media_data.buff[index++] == 0x01){
+			nalu->startcodeprefix_len = 4;
+                    	goto gotnal;
+		    }
 		}
+	    }
+	    continue;
+gotnal:
+	    memset(nalu->buf, 0, 8000000);
+	    int nalu_type = media_data.buff[index] & 0x1f;
+	    if(nalu_type == 0x07){//sps
+		int sps_index = index;
+		while(sps_index < media_data.len){
+		    if(media_data.buff[sps_index++] == 0x00 && media_data.buff[sps_index++] == 0x00){
+			if(media_data.buff[sps_index++] == 0x01){
+			    break;
+			}else{
+			    sps_index--;
+			    if(media_data.buff[sps_index++] == 0x00 && media_data.buff[sps_index++] == 0x01){
+				break;
+			    }
+			}
+		    }
+		}
+		int type = media_data.buff[sps_index] & 0x1f;
+		if(type == 0x08){//pps
+		    int pps_index = sps_index;
+		    while(pps_index < media_data.len){
+                        if(media_data.buff[pps_index++] == 0x00 && media_data.buff[pps_index++] == 0x00){
+                            if(media_data.buff[pps_index++] == 0x01){
+                                nalu->len = pps_index - 3 - index;
+                                break;
+                            }else{
+                                pps_index--;
+                                if(media_data.buff[pps_index++] == 0x00 && media_data.buff[pps_index++] == 0x01){
+                                    nalu->len = pps_index - 4 - index;
+                                    break;
+                                }
+                            } 
+                        }
+                    }
+                    if(nalu->len == 0){
+			printf("because of 0 break \n");
+			break;
+		    }
+		    memcpy(nalu->buf, media_data.buff + index, nalu->len);
+		    
+		    index = index + nalu->len;	
+		}
+	    }else if(nalu_type == 0x05 || nalu_type == 0x01){//I frame and P frame
+		nalu->len = media_data.len - index;
+		memcpy(nalu->buf, media_data.buff + index, nalu->len);
+		index = index + nalu->len;
+	    }
+	    nalu->forbidden_bit = nalu->buf[0] & 0x80;      //1 bit
+            nalu->nal_reference_idc = nalu->buf[0] & 0x60;  // 2 bit
+            nalu->nal_unit_type = (nalu->buf[0]) & 0x1f;    // 5 bit 
+
+	    if(nalu->len < MAX_RTP_PKT_LENGTH){
+		memset(sendbuf, 0, MAX_RTP_PKT_LENGTH);
+		nalu_hdr = (NALU_HEADER*)&sendbuf[0];
+		nalu_hdr->F = nalu->forbidden_bit;
+		nalu_hdr->NRI = nalu->nal_reference_idc>>5;
+		nalu_hdr->TYPE = nalu->nal_unit_type;
+		nalu_payload=&sendbuf[1];
+		memcpy(nalu_payload, nalu->buf + 1, nalu->len -1);
+		ts_current=ts_current+timestamp_increse;    
+		ret = session.SendPacket((void*)sendbuf, nalu->len, 96, true, 3600);
+		if(ret < 0) {
+		    string msg = RTPGetErrorString(ret);
+		    printf("Error string:%s \n", msg.c_str());
+		    LOG(false, function + " jrtp send packet failed " + msg);
+		}
+	    }else if(nalu->len > MAX_RTP_PKT_LENGTH){
+		//session.SetDefaultMark(false);
+	        int k = 0, l = 0;
+		k = nalu->len / MAX_RTP_PKT_LENGTH;
+		l = nalu->len % MAX_RTP_PKT_LENGTH;
+		int t = 0;
+		ts_current = ts_current + timestamp_increse;
+		while(t <= k){
+		    memset(sendbuf, 0, MAX_RTP_PKT_LENGTH);
+		    fu_ind = (FU_INDICATOR*)&sendbuf[0];
+		    fu_ind->F = nalu->forbidden_bit;
+		    fu_ind->NRI = nalu->nal_reference_idc>>5;
+		    fu_ind->TYPE=28;
+		    if(!t){//fisrt slice
+			fu_hdr =(FU_HEADER*)&sendbuf[1];
+			fu_hdr->E=0;
+			fu_hdr->R=0;
+			fu_hdr->S=1;
+			fu_hdr->TYPE = nalu->nal_unit_type;
+			nalu_payload=&sendbuf[2];
+			memcpy(nalu_payload , nalu->buf + 1, MAX_RTP_PKT_LENGTH);
+			ret = session.SendPacket((void*)sendbuf, MAX_RTP_PKT_LENGTH + 2, 96, false, 0);
+			if(ret < 0) {
+			    string msg = RTPGetErrorString(ret);
+			    printf("Error string:%s \n", msg.c_str());
+			    LOG(false, function + " jrtp send packet failed " + msg);
+			}
+			t++;
+		    }else if(t < k && 0 != t){//middle slice
+			fu_hdr =(FU_HEADER*)&sendbuf[1];
+			fu_hdr->E=0;
+			fu_hdr->R=0;
+			fu_hdr->S=0;
+			fu_hdr->TYPE = nalu->nal_unit_type;
+			nalu_payload=&sendbuf[2];
+			memcpy(nalu_payload, nalu->buf+t*MAX_RTP_PKT_LENGTH + 1,MAX_RTP_PKT_LENGTH);
+			ret = session.SendPacket((void*)sendbuf, MAX_RTP_PKT_LENGTH + 2, 96, false, 0);
+			if(ret < 0) {
+			    string msg = RTPGetErrorString(ret);
+			    printf("Error string:%s \n", msg.c_str());
+			    LOG(false, function + " jrtp send packet failed " + msg);
+			}
+			t++;
+		    }else if(t == k){//last slice
+			fu_hdr = (FU_HEADER*)&sendbuf[1];
+			fu_hdr->E = 1;
+			fu_hdr->R = 0;
+			fu_hdr->S = 0;
+			fu_hdr->TYPE = nalu->nal_unit_type;
+			nalu_payload = &sendbuf[2];
+			memcpy(nalu_payload, nalu->buf+t*MAX_RTP_PKT_LENGTH + 1,l - 1);
+			ret = session.SendPacket((void *)sendbuf,l+1,96,true,3600);
+			if(ret < 0) {
+			    string msg = RTPGetErrorString(ret);
+			    printf("Error string:%s \n", msg.c_str());
+			    LOG(false, function + " jrtp send packet failed " + msg);
+			}
+			t++;
+		    }
+		}
+		break;
+	    }
 	}
         if(media_data.buff){
 		free(media_data.buff);
@@ -196,4 +303,27 @@ void *JrtpFun(void *ptr){
 	}	
     }
 }
+
+NALU_t *AllocNALU(int buffersize)
+{
+	NALU_t *nal =NULL;
+
+    if ((nal = (NALU_t*)calloc (1, sizeof (NALU_t))) == NULL)
+    {
+        printf("AllocNALU: n");
+        exit(0);
+    }
+
+    nal->max_size=buffersize;
+
+    if ((nal->buf = (unsigned char*)calloc (buffersize, sizeof (char))) == NULL)
+    {
+        free (nal);
+        printf ("AllocNALU: nal->buf");
+        exit(0);
+    }
+
+    return nal;
+}
+
 

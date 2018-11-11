@@ -6,7 +6,6 @@
 
 
 #define DEBUG  0
-#define USE_SOCK 0
 #define SOFTENCODE 0
 #define USE_FFMPEG  0
 #define VIDEO_STATUS  1
@@ -14,6 +13,8 @@
 #define AUDIO_RATE 16000
 #define DST_WIDTH 1280
 #define DST_HEIGHT 720
+#define SRC_PORT 7088
+#define DST_PORT 8000
 #define ENCODER_PIXFMT  V4L2_PIX_FMT_H264
 //#define ENCODER_PIXFMT  V4L2_PIX_FMT_H265
 #define DEFAULT_FPS 25
@@ -23,7 +24,7 @@
 
 #define SOCKLENGTH 1400
 #define BUFFLENGTH 1450
-#define MAX_RTP_PKT_LENGTH 1200
+#define MAX_RTP_PKT_LENGTH 1360
 
 struct MediaDataStruct{
     int len;
